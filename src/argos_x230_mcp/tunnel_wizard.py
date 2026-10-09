@@ -10,6 +10,8 @@ DO NOT expose the wizard on a public interface. Always 127.0.0.1 only.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import signal
 import hashlib
 import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,6 +83,19 @@ def save_private(path: Path, payload: str) -> None:
         raise
 
 
+def acquire_single_instance(base: Path) -> int | None:
+    """Linux advisory lock, one wizard instance per user."""
+    base = Path(base)
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(base / ".wizard.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        os.close(fd)
+        return None
+    return fd
+
+
 def redacted_result(output: str) -> str:
     # Do not display the output from cloudflared, because it may include
     # credential paths or ephemeral authorization URLs/tokens.
@@ -126,6 +141,17 @@ class ProvisioningSession:
         self.access_verified = False
         self.login_proc: subprocess.Popen | None = None
         self.login_log_path: Path | None = None
+
+    def close(self) -> None:
+        """Clean up temporary login process without stopping any tunnel."""
+        with self.lock:
+            if self.login_proc is not None and self.login_proc.poll() is None:
+                try:
+                    os.killpg(self.login_proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            if self.login_log_path:
+                self.login_log_path.unlink(missing_ok=True)
 
     def status(self) -> dict:
         return {
@@ -349,9 +375,9 @@ def _ui_html(token: str) -> str:
     <button id="verify">Проверить Access без авторизации</button>
     <p><button id="enable">Запустить новый туннель (после проверки Access)</button></p>
     <p class="muted">Только отдельный туннель systemd --user. Существующий Cloudflare и HA не затрагиваются.</p></section>
-    <section><h2>Состояние и инструкции</h2><button id="refresh">Обновить статус</button>
+    <section><h2>Состояние и инструкции</h2><button id="refresh">Обновить статус</button> <button id="stop">Закрыть мастер</button>
     <pre id="output">Ожидаю команду…</pre></section>
-    <p class="muted">Мастер слушает только 127.0.0.1. Для закрытия остановите процесс в терминале (Ctrl+C).</p>
+    <p class="muted">Мастер слушает только 127.0.0.1. Для закрытия нажмите «Закрыть мастер» или Ctrl+C в терминале.</p>
     </main><script nonce="SCRIPT_N">
     const csrf="TOKEN_VALUE";
     const out=document.getElementById("output");
@@ -364,7 +390,7 @@ def _ui_html(token: str) -> str:
         return data;
       }catch(e){out.textContent="Ошибка соединения с локальным мастером";return {ok:false};}
     }
-    for(const action of ["login","create","prepare","route","verify","enable","refresh"]){
+    for(const action of ["login","create","prepare","route","verify","enable","refresh","stop"]){
       document.getElementById(action).onclick=async()=>{
         const popup=action==="login" ? window.open("about:blank","_blank") : null;
         const map={create:{name:document.getElementById("name").value},
@@ -384,7 +410,7 @@ def _ui_html(token: str) -> str:
     </script></body></html>""".replace("TOKEN_VALUE", token).replace("STYLE_N", token[:16]).replace("SCRIPT_N", token[16:32])
 
 
-def make_handler(session: ProvisioningSession, host: str):
+def make_handler(session: ProvisioningSession, host: str, stop=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -431,6 +457,10 @@ def make_handler(session: ProvisioningSession, host: str):
                 elif operation == "route": answer = session.route(request.get("approved") is True)
                 elif operation == "verify": answer = session.check_access()
                 elif operation == "enable": answer = session.enable_service(request.get("approved") is True)
+                elif operation == "stop":
+                    if stop is None:
+                        raise ValueError("Stop button unavailable")
+                    answer = {"ok": True, "message": "Local master is shutting down"}
                 else: raise ValueError("Unsupported operation")
                 response = {"ok": True, "result": answer}
             except (ValueError, OSError, RuntimeError, TimeoutError) as error:
@@ -443,6 +473,9 @@ def make_handler(session: ProvisioningSession, host: str):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+            if (stop is not None and response.get("ok")
+                    and response.get("result", {}).get("message") == "Local master is shutting down"):
+                threading.Thread(target=stop, daemon=True).start()
     return Handler
 
 
@@ -452,20 +485,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if os.geteuid() == 0:
         parser.error("Do not run tunnel wizard as root")
+    lock_fd = acquire_single_instance(CONFIG_DIR)
+    if lock_fd is None:
+        print("ARGOS Cloudflare Tunnel Wizard is already running for this user")
+        return 75
     session = ProvisioningSession()
-    web = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
-    port = web.server_port
-    web.RequestHandlerClass = make_handler(session, f"127.0.0.1:{port}")
-    url = f"http://127.0.0.1:{port}/"
-    print("ARGOS Tunnel Wizard (local-only):", url, flush=True)
-    if not args.no_browser:
-        webbrowser.open(url)
     try:
-        web.serve_forever(poll_interval=.2)
-    except KeyboardInterrupt:
-        print("\nMaster stopped; existing tunnels unchanged")
+        web = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+        web.RequestHandlerClass = make_handler(
+            session, f"127.0.0.1:{web.server_port}", stop=web.shutdown
+        )
+        url = f"http://127.0.0.1:{web.server_port}/"
+        print("ARGOS Tunnel Wizard (local-only):", url, flush=True)
+        if not args.no_browser:
+            webbrowser.open(url)
+        try:
+            web.serve_forever(poll_interval=.2)
+        except KeyboardInterrupt:
+            print("\nMaster stopped; existing tunnels unchanged")
+        finally:
+            web.server_close()
     finally:
-        web.server_close()
+        session.close()
+        os.close(lock_fd)
     return 0
 
 

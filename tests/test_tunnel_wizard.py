@@ -209,6 +209,42 @@ class TunnelWizardTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_only_one_wizard_may_run(self):
+        lockdir = self.base / "private-state"
+        a = wizard.acquire_single_instance(lockdir)
+        self.assertIsInstance(a, int)
+        try:
+            b = wizard.acquire_single_instance(lockdir)
+            self.assertIsNone(b, "second concurrent wizard should be denied")
+        finally:
+            os.close(a)
+        third = wizard.acquire_single_instance(lockdir)
+        self.assertIsInstance(third, int)
+        os.close(third)
+
+    def test_stop_requires_session_secret_and_origin(self):
+        server = wizard.ThreadingHTTPServer(("127.0.0.1", 0), wizard.BaseHTTPRequestHandler)
+        host = f"127.0.0.1:{server.server_port}"
+        fired = threading.Event()
+        server.RequestHandlerClass = wizard.make_handler(self.session, host, stop=fired.set)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+            data = json.dumps({"action": "stop", "csrf": self.session.session_token}).encode()
+            conn.request("POST", "/action", body=data, headers={
+                "Host": host, "Origin": "http://" + host, "Content-Type": "application/json"
+            })
+            res = conn.getresponse()
+            reply = json.loads(res.read())
+            conn.close()
+            self.assertTrue(reply["ok"])
+            self.assertTrue(fired.wait(timeout=1))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_root_execution_denied(self):
         with mock.patch.object(wizard.os, "geteuid", return_value=0):
             with self.assertRaises(SystemExit):

@@ -23,7 +23,7 @@ def desktop_contents(python: Path) -> str:
         "Comment=Open a local browser wizard for your own Cloudflare tunnel\n"
         f"Exec={quoted} -m argos_x230_mcp.tunnel_wizard\n"
         "Icon=network-server\n"
-        "Terminal=true\nCategories=Network;Development;\n"
+        "Terminal=true\nCategories=Network;\n"
     )
 
 

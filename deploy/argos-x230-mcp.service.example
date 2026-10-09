@@ -1,0 +1,35 @@
+# Example only — replace paths and service user, then remove '.example'.
+# Never execute this service as root.
+[Unit]
+Description=ARGOS X230 Open MCP — least-privilege local server
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_UNPRIVILEGED_USER
+Group=YOUR_UNPRIVILEGED_USER
+WorkingDirectory=/home/YOUR_UNPRIVILEGED_USER/argos-x230-mcp
+Environment=ARGOS_MCP_WORKSPACE=/home/YOUR_UNPRIVILEGED_USER/argos-mcp-workspace
+Environment=ARGOS_MCP_TOKEN_FILE=/home/YOUR_UNPRIVILEGED_USER/.config/argos-x230-mcp/token
+# Put ARGOS_MCP_PUBLIC_HOSTNAME, ARGOS_CF_ACCESS_TEAM/AUD/EMAIL
+# in private EnvironmentFile when enabling Cloudflare Access.
+# EnvironmentFile=-/home/YOUR_UNPRIVILEGED_USER/.config/argos-x230-mcp/access.env
+ExecStart=/home/YOUR_UNPRIVILEGED_USER/argos-x230-mcp/.venv/bin/python -m uvicorn argos_x230_mcp.server:app --host 127.0.0.1 --port 8765 --no-access-log
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/YOUR_UNPRIVILEGED_USER/argos-mcp-workspace
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CPUQuota=40%
+MemoryMax=180M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

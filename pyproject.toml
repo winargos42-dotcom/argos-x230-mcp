@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argos-x230-mcp"
+version = "0.1.0"
+description = "Open-source local-first MCP workstation bridge with sandboxed tests and browser-assisted Cloudflare Tunnel wizard"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "ARGOS Open Source Contributors"}]
+keywords = ["mcp", "cloudflare", "linux", "remote-development", "sandbox"]
+dependencies = [
+  "mcp>=1.15,<3",
+  "uvicorn>=0.30,<1",
+  "PyJWT[crypto]>=2.8,<3",
+]
+
+[project.optional-dependencies]
+test = ["httpx>=0.27,<1"]
+
+[project.scripts]
+argos-mcp-tunnel-wizard = "argos_x230_mcp.tunnel_wizard:main"
+argos-mcp-install-desktop = "argos_x230_mcp.desktop_launcher:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+argos_x230_mcp = ["py.typed"]

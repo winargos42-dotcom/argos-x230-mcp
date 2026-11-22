@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from .safe_commands import run_safe_command as _run_safe_command
 from .expanded_tools import register_tools
+from .coordination import register_coordination_tools
 
 ROOT = Path(os.environ.get("ARGOS_MCP_WORKSPACE", str(Path.home() / "argos-mcp-workspace"))).resolve()
 HOST = "127.0.0.1"
@@ -190,6 +191,7 @@ def run_safe_command(
     return _run_safe_command(action, relative_path, workspace=ROOT)
 
 register_tools(mcp, ROOT)
+register_coordination_tools(mcp, ROOT)
 
 class BearerGate:
     """Fail-closed auth for all HTTP requests; ASGI lifespan passes through."""

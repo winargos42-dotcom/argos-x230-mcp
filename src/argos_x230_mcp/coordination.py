@@ -14,6 +14,7 @@ import re
 import sqlite3
 import stat
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,127}$")
@@ -94,13 +95,21 @@ class CoordinationLedger:
             """)
         self._limit_permissions()
 
+    @contextmanager
     def _connect(self):
         con = sqlite3.connect(self.db, timeout=8, isolation_level=None)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA busy_timeout=8000")
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA synchronous=FULL")
-        return con
+        try:
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA busy_timeout=8000")
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA synchronous=FULL")
+            yield con
+        except BaseException:
+            if con.in_transaction:
+                con.rollback()
+            raise
+        finally:
+            con.close()
 
     def _limit_permissions(self):
         for file in (self.db, Path(str(self.db) + "-wal"), Path(str(self.db) + "-shm")):
